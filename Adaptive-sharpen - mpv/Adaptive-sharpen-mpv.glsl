@@ -185,8 +185,7 @@ vec4 hook() {
     for (int pix = 0; pix < 12; ++pix)
     {
 #if (quality_mode == 0)
-        // as in the HLSL: the a_offset sits outside the 13.2 factor here
-        float lowthr = clamp((13.2*c[pix + 1].a - a_offset - 0.221), 0.01, 1.0);
+        float lowthr = clamp((13.2*(c[pix + 1].a - a_offset) - 0.221), 0.01, 1.0);
         neg_laplace += sqr(luma[pix + 1])*(abs(weights[pix])*lowthr);
 #else
         float t = clamp((c[pix + 1].a - a_offset - 0.01)/0.09, 0.0, 1.0);
