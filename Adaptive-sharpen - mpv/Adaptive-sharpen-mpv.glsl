@@ -1,4 +1,4 @@
-// Copyright (c) 2015-2021, bacondither
+// Copyright (c) 2015-2026, bacondither
 // All rights reserved.
 //
 // Redistribution and use in source and binary forms, with or without
@@ -22,10 +22,10 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 // THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-// Adaptive sharpen - version DX11 - 2021-09-10 (quality_mode 1, the HQ original code path)
+// Adaptive sharpen - version DX11 - 2026-10-11 (quality_mode 1, the HQ original code path)
 // Tuned for use post-resize, EXPECTS FULL RANGE GAMMA LIGHT
 // mpv / libplacebo user-shader form of bacondither/Miscellaneous-shaders "Adaptive-sharpen - DX11" pass 1 + pass 2
-// (repo state 24783895, 2021-10-19), the HLSL math unchanged.
+// (repo state d991beb, 2026-10-17), the HLSL math unchanged.
 
 // Settings (sharpening strength curve_height, quality_mode): the "Settings" block at the start of pass 2
 // below. mpv compiles each pass on its own, so they live in the pass that uses them.
@@ -34,24 +34,49 @@
 //!BIND HOOKED
 //!SAVE ASEDGE
 //!COMPONENTS 4
-//!DESC adaptive-sharpen pass 1 (bacondither DX11 2021-09-10)
+//!DESC adaptive-sharpen pass 1 (bacondither DX11 2026-10-11)
 
 #define a_offset     2.0                     // Edge channel offset, MUST BE THE SAME IN ALL PASSES
+
+#define fast_length  0                       // Fast length using aproximate sqrt
+
+// Get pixel values
 #define get(x,y)     ( clamp(HOOKED_texOff(vec2(x, y)).rgb, 0.0, 1.0) )
+// Component-wise distance
 #define b_diff(pix)  ( abs(blur - c[pix]) )
+
+#if (fast_length == 1)
+    #define LENGTH(v) (intBitsToFloat(0x1FBD1DF5u + (floatBitsToInt(dot(v, v)) >> 1)))
+#else
+    #define LENGTH(v) (length(v))
+#endif
 
 vec4 hook() {
     vec3 cO = HOOKED_texOff(vec2(0.0, 0.0)).rgb;
+
+    // Get points and clip out of range values (BTB & WTW)
     // [                c9                ]
     // [           c1,  c2,  c3           ]
     // [      c10, c4,  c0,  c5, c11      ]
     // [           c6,  c7,  c8           ]
     // [                c12               ]
     vec3 c[13] = vec3[](clamp(cO, 0.0, 1.0), get(-1,-1), get( 0,-1), get( 1,-1), get(-1, 0),
-                        get( 1, 0), get(-1, 1), get( 0, 1), get( 1, 1), get( 0,-2),
-                        get(-2, 0), get( 2, 0), get( 0, 2));
+                                 get( 1, 0), get(-1, 1), get( 0, 1), get( 1, 1), get( 0,-2),
+                                 get(-2, 0), get( 2, 0), get( 0, 2));
+
+    // Gauss blur 3x3
     vec3 blur = (2.0*(c[2]+c[4]+c[5]+c[7]) + (c[1]+c[3]+c[6]+c[8]) + 4.0*c[0])/16.0;
+
+    // Contrast compression, center = 0.5, scaled to 1/3
     float c_comp = clamp(4.0/15.0 + 0.9*exp2(dot(blur, vec3(-37.0/15.0))), 0.0, 1.0);
+
+    // Edge detection
+    // Relative matrix weights
+    // [          1          ]
+    // [      4,  5,  4      ]
+    // [  1,  5,  6,  5,  1  ]
+    // [      4,  5,  4      ]
+    // [          1          ]
     float edge = length( 1.38*(b_diff(0))
                        + 1.15*(b_diff(2) + b_diff(4)  + b_diff(5)  + b_diff(7))
                        + 0.92*(b_diff(1) + b_diff(3)  + b_diff(6)  + b_diff(8))
@@ -62,7 +87,7 @@ vec4 hook() {
 //!HOOK OUTPUT
 //!BIND HOOKED
 //!BIND ASEDGE
-//!DESC adaptive-sharpen pass 2 (bacondither DX11 2021-09-10)
+//!DESC adaptive-sharpen pass 2 (bacondither DX11 2026-10-11)
 
 //--------------------------------------- Settings ------------------------------------------------
 
@@ -71,6 +96,7 @@ vec4 hook() {
 
 #define quality_mode    1                    // Use HQ original code path (1), faster approximations (0)
 
+#define fskip           0                    // Skip limiting on flat areas where sharpdiff is low
 // Defined values under this row are "optimal" DO NOT CHANGE IF YOU DO NOT KNOW WHAT YOU ARE DOING!
 
 #define curveslope      0.5                  // Sharpening curve slope, high edge values
@@ -86,24 +112,55 @@ vec4 hook() {
 #define scale_lim       0.1                  // Abs max change before compression [>0.01]
 #define scale_cs        0.056                // Compression slope above scale_lim [0.0-1.0]
 
+#define dW_lothr        0.3                  // Start interpolating between W1 and W2
+#define dW_hithr        0.8                  // When dW is equal to W2
+
+#define lowthr_mxw      0.1                  // Edge value for max lowthr weight [>0.01]
+
 #define pm_p            0.7                  // Power mean p-value [>0.0-1.0]
 //-------------------------------------------------------------------------------------------------
 
 #define a_offset        2.0                  // Edge channel offset, MUST BE THE SAME IN ALL PASSES
+#define bounds_check    1                    // If edge data is outside bounds, make pixels green
 
+// Soft if, fast linear approx
 #define soft_if(a,b,c) ( clamp((a + b + c - 3.0*a_offset + 0.056)/(abs(maxedge) + 0.03) - 0.85, 0.0, 1.0) )
+// Soft limit, modified tanh
 #if (quality_mode == 0) // Tanh approx
     #define soft_lim(v,s)  ( clamp(abs(v/s)*(27.0 + sqr(v/s))/(27.0 + 9.0*sqr(v/s)), 0.0, 1.0)*s )
 #else
     #define soft_lim(v,s)  ( (exp(2.0*min(abs(v), s*24.0)/s) - 1.0)/(exp(2.0*min(abs(v), s*24.0)/s) + 1.0)*s )
 #endif
+
+// Fast-skip threshold, keep max possible luma error under 0.5/2^bit-depth
+#if (quality_mode == 0)
+    // Approx of x = tanh(x/y)*y + 0.5/2^bit-depth, y = min(L_overshoot, D_overshoot)
+    #define min_overshoot  ( min(abs(L_overshoot), abs(D_overshoot)) )
+    //#define fskip_th       ( 0.114*pow(min_overshoot, 0.676) + 3.20e-4 ) // 10-bits
+    #define fskip_th       ( 0.045*pow(min_overshoot, 0.667) + 1.75e-5 ) // 14-bits
+#else
+    // x = tanh(x/y)*y + 0.5/2^bit-depth, y = 0.0001
+    #define fskip_th       ( 0.0000643723 ) // 16-bits
+    //#define fskip_th       ( 0.000110882 ) // 14-bits
+#endif
+
+// Smoothstep to linearstep approx
+//#define SStLS(a,b,x,c) ( clamp(-(6*(c - 1)*(b - x))/(5*(a - b)) - 0.1*c + 1.1, c, 1) )
+
+// Weighted power mean
 #define wpmean(a,b,w)  ( pow(w*pow(abs(a), pm_p) + abs(1.0-w)*pow(abs(b), pm_p), (1.0/pm_p)) )
+
+// Get pixel values
 #define get(x,y)       ( ASEDGE_texOff(vec2(x, y)) )
 #define satc(var)      ( vec4(clamp((var).rgb, 0.0, 1.0), (var).a) )
+
+// Helper funcs
 #define max4(a,b,c,d)  ( max(max(a, b), max(c, d)) )
 #define max3(a,b,c)    ( max(max(a, b), c) )
 #define sqr(a)         ( (a)*(a) )
+// Colour to luma, fast approx gamma, avg of rec. 709 & 601 luma coeffs
 #define CtL(var)       ( sqrt(dot(vec3(0.2558, 0.6511, 0.0931), clamp(((var)*abs(var)).rgb, 0.0, 1.0))) )
+// Center pixel diff
 #define mdiff(a,b,c,d,e,f,g) ( abs(luma[g] - luma[a]) + abs(luma[g] - luma[b])       \
                              + abs(luma[g] - luma[c]) + abs(luma[g] - luma[d])       \
                              + 0.5*(abs(luma[g] - luma[e]) + abs(luma[g] - luma[f])) )
@@ -111,8 +168,11 @@ vec4 hook() {
 vec4 hook() {
     vec4 cO = get(0, 0);
     float c_edge = cO.a - a_offset;
-    if (c_edge > 16.0 || c_edge < -0.5) { return vec4(0.0, 1.0, 0.0, 1.0); }  // bounds_check: green = bad edge data
 
+#if (bounds_check == 1)
+    if (c_edge > 16.0 || c_edge < -0.5) { return vec4(0.0, 1.0, 0.0, 1.0); }  // bounds_check: green = bad edge data
+#endif
+    // Get points, clip out of range colour data in c[0]
     // [                c22               ]
     // [           c24, c9,  c23          ]
     // [      c21, c1,  c2,  c3, c18      ]
@@ -126,9 +186,17 @@ vec4 hook() {
                         get(-1, 2), get( 3, 0), get( 2, 1), get( 2,-1), get(-3, 0),
                         get(-2, 1), get(-2,-1), get( 0,-3), get( 1,-2), get(-1,-2));
 
+    // Allow for higher overshoot if the current edge pixel is surrounded by similar edge pixels
     float maxedge = max4( max4(c[1].a,c[2].a,c[3].a,c[4].a), max4(c[5].a,c[6].a,c[7].a,c[8].a),
                           max4(c[9].a,c[10].a,c[11].a,c[12].a), c[0].a ) - a_offset;
 
+    // [          x          ]
+    // [       z, x, w       ]
+    // [    z, z, x, w, w    ]
+    // [ y, y, y, 0, y, y, y ]
+    // [    w, w, x, z, z    ]
+    // [       w, x, z       ]
+    // [          x          ]
     float sbe = soft_if(c[2].a,c[9].a, c[22].a)*soft_if(c[7].a,c[12].a,c[13].a)  // x dir
               + soft_if(c[4].a,c[10].a,c[19].a)*soft_if(c[5].a,c[11].a,c[16].a)  // y dir
               + soft_if(c[1].a,c[24].a,c[21].a)*soft_if(c[8].a,c[14].a,c[17].a)  // z dir
@@ -142,14 +210,18 @@ vec4 hook() {
                    vec2(L_compr_high, D_compr_high), smoothstep(2.0, 3.1, sbe) );
 #endif
 
+    // RGB to luma
     float c0_Y = CtL(c[0]);
     float luma[25] = float[](c0_Y, CtL(c[1]), CtL(c[2]), CtL(c[3]), CtL(c[4]), CtL(c[5]), CtL(c[6]),
                              CtL(c[7]),  CtL(c[8]),  CtL(c[9]),  CtL(c[10]), CtL(c[11]), CtL(c[12]),
                              CtL(c[13]), CtL(c[14]), CtL(c[15]), CtL(c[16]), CtL(c[17]), CtL(c[18]),
                              CtL(c[19]), CtL(c[20]), CtL(c[21]), CtL(c[22]), CtL(c[23]), CtL(c[24]));
 
+    // Pre-calculated default squared kernel weights
     const vec3 W1 = vec3(0.5,           1.0, 1.41421356237); // 0.25, 1.0, 2.0
     const vec3 W2 = vec3(0.86602540378, 1.0, 0.54772255751); // 0.75, 1.0, 0.3
+
+// Transition to a concave kernel if the center edge val is above thr
 #if (quality_mode == 0)
     vec3 dW = sqr(mix( W1, W2, clamp(2.4*c_edge - 0.82, 0.0, 1.0) ));
 #else
@@ -161,6 +233,8 @@ vec4 hook() {
                                 + 0.25*(abs(luma[0]-luma[1]) + abs(luma[0]-luma[3])
                                        +abs(luma[0]-luma[6]) + abs(luma[0]-luma[8])) );
 
+    // Use lower weights for pixels in a more active area relative to center pixel area
+    // This results in narrower and less visible overshoots around sharp edges
     float weights[12] = float[]( ( min(mdiff_c0/mdiff(24, 21, 2,  4,  9,  10, 1),  dW.y) ),   // c1
                                  ( dW.x ),                                                    // c2
                                  ( min(mdiff_c0/mdiff(23, 18, 5,  2,  9,  11, 3),  dW.y) ),   // c3
@@ -179,6 +253,7 @@ vec4 hook() {
     weights[5] = (max3((weights[9]  + weights[11])/4.0, weights[5], 0.25) + weights[5])/2.0;
     weights[7] = (max3((weights[10] + weights[11])/4.0, weights[7], 0.25) + weights[7])/2.0;
 
+    // Calculate the negative part of the laplace kernel and the low threshold weight
     float lowthrsum   = 0.0;
     float weightsum   = 0.0;
     float neg_laplace = 0.0;
@@ -189,7 +264,7 @@ vec4 hook() {
         neg_laplace += sqr(luma[pix + 1])*(abs(weights[pix])*lowthr);
 #else
         float t = clamp((c[pix + 1].a - a_offset - 0.01)/0.09, 0.0, 1.0);
-        float lowthr = t*t*(2.97 - 1.98*t) + 0.01;
+        float lowthr = t*t*(2.97 - 1.98*t) + 0.01; // t*t*(3 - a*3 - (2 - a*2)*t) + a
         neg_laplace += pow(abs(luma[pix + 1]) + 0.06, 2.4)*(abs(weights[pix])*lowthr);
 #endif
         weightsum   += abs(weights[pix])*lowthr;
@@ -201,9 +276,16 @@ vec4 hook() {
     neg_laplace = clamp(pow(neg_laplace/weightsum, (1.0/2.4)) - 0.06, 0.0, 1.0);
 #endif
 
+    // Compute sharpening magnitude function
     float sharpen_val = curve_height/(curve_height*curveslope*pow(abs(c_edge), 3.5) + 0.625);
+
+    // Calculate sharpening diff and scale
     float sharpdiff = (c0_Y - neg_laplace)*(lowthrsum*sharpen_val + 0.01);
 
+#if (fskip == 1)
+    if (abs(sharpdiff) > fskip_th)
+    {
+#endif
     // Calculate local near min & max, partial sort (3 iterations)
     float temp; int i; int ii;
     for (i = 0; i < 24; i += 2) { temp = luma[i]; luma[i] = min(luma[i], luma[i+1]); luma[i+1] = max(temp, luma[i+1]); }
@@ -227,6 +309,7 @@ vec4 hook() {
     }
 #endif
 
+// Calculate tanh scale factors
 #if (quality_mode == 0)
     float nmax = (max(luma[23], c0_Y)*2.0 + luma[24])/3.0;
     float nmin = (min(luma[1],  c0_Y)*2.0 + luma[0])/3.0;
@@ -241,8 +324,13 @@ vec4 hook() {
 #endif
     pn_scale = min(pn_scale, scale_lim*(1.0 - scale_cs) + pn_scale*scale_cs);
 
+    // Soft limited anti-ringing with tanh, wpmean to control compression slope
     sharpdiff = wpmean( max(sharpdiff, 0.0), soft_lim( max(sharpdiff, 0.0), pn_scale.x ), cs.x )
               - wpmean( min(sharpdiff, 0.0), soft_lim( min(sharpdiff, 0.0), pn_scale.y ), cs.y );
+
+#if (fskip == 1)
+    }
+#endif
 
     // Compensate for saturation loss/gain while making pixels brighter/darker
     float sharpdiff_lim = clamp(c0_Y + sharpdiff, 0.0, 1.0) - c0_Y;
