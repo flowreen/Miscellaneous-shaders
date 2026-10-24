@@ -27,8 +27,20 @@
 // mpv / libplacebo user-shader form of bacondither/Miscellaneous-shaders "Adaptive-sharpen - DX11" pass 1 + pass 2
 // (repo state d991beb, 2026-10-17), the HLSL math unchanged.
 
-// Settings (sharpening strength curve_height, quality_mode): the "Settings" block at the start of pass 2
-// below. mpv compiles each pass on its own, so they live in the pass that uses them.
+//------------------------------ Main sharpening strength setting ---------------------------------
+// The rest of the "#define" settings can be found in the blocks "Pass n settings"
+// mpv compiles each pass on its own, so they live in the pass that uses them.
+
+// Add to mpv.conf to control sharpening strength from config instead of shader:
+// glsl-shader-opts=Adaptive-sharpen-mpv/curve_height=1.0
+
+//!PARAM curve_height
+//!DESC Main control of sharpening strength. 0.3 <-> 2.0 is a reasonable range of values
+//!TYPE float
+//!MINIMUM 0.001
+1.0
+
+//-------------------------------------------------------------------------------------------------
 
 //!HOOK OUTPUT
 //!BIND HOOKED
@@ -36,9 +48,13 @@
 //!COMPONENTS 4
 //!DESC adaptive-sharpen pass 1 (bacondither DX11 2026-10-11)
 
-#define a_offset     2.0                     // Edge channel offset, MUST BE THE SAME IN ALL PASSES
+//--------------------------------------- Pass 1 settings -----------------------------------------
 
-#define fast_length  0                       // Fast length using aproximate sqrt
+#define fast_length     0                    // Fast length using aproximate sqrt
+
+#define a_offset        2.0                  // Edge channel offset, MUST BE THE SAME IN ALL PASSES
+
+//-------------------------------------------------------------------------------------------------
 
 // Get pixel values
 #define get(x,y)     ( clamp(HOOKED_texOff(vec2(x, y)).rgb, 0.0, 1.0) )
@@ -89,14 +105,12 @@ vec4 hook() {
 //!BIND ASEDGE
 //!DESC adaptive-sharpen pass 2 (bacondither DX11 2026-10-11)
 
-//--------------------------------------- Settings ------------------------------------------------
-
-#define curve_height    1.0                  // Main control of sharpening strength [>0]
-                                             // 0.3 <-> 2.0 is a reasonable range of values
+//--------------------------------------- Pass 2 settings -----------------------------------------
 
 #define quality_mode    1                    // Use HQ original code path (1), faster approximations (0)
 
 #define fskip           0                    // Skip limiting on flat areas where sharpdiff is low
+
 // Defined values under this row are "optimal" DO NOT CHANGE IF YOU DO NOT KNOW WHAT YOU ARE DOING!
 
 #define curveslope      0.5                  // Sharpening curve slope, high edge values
@@ -118,10 +132,11 @@ vec4 hook() {
 #define lowthr_mxw      0.1                  // Edge value for max lowthr weight [>0.01]
 
 #define pm_p            0.7                  // Power mean p-value [>0.0-1.0]
-//-------------------------------------------------------------------------------------------------
 
 #define a_offset        2.0                  // Edge channel offset, MUST BE THE SAME IN ALL PASSES
 #define bounds_check    1                    // If edge data is outside bounds, make pixels green
+
+//-------------------------------------------------------------------------------------------------
 
 // Soft if, fast linear approx
 #define soft_if(a,b,c) ( clamp((a + b + c - 3.0*a_offset + 0.056)/(abs(maxedge) + 0.03) - 0.85, 0.0, 1.0) )
