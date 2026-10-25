@@ -50,8 +50,6 @@
 
 //--------------------------------------- Pass 1 settings -----------------------------------------
 
-#define fast_length     0                    // Fast length using aproximate sqrt
-
 #define a_offset        2.0                  // Edge channel offset, MUST BE THE SAME IN ALL PASSES
 
 //-------------------------------------------------------------------------------------------------
@@ -60,12 +58,6 @@
 #define get(x,y)     ( clamp(HOOKED_texOff(vec2(x, y)).rgb, 0.0, 1.0) )
 // Component-wise distance
 #define b_diff(pix)  ( abs(blur - c[pix]) )
-
-#if (fast_length == 1)
-    #define LENGTH(v) (intBitsToFloat(0x1FBD1DF5u + (floatBitsToInt(dot(v, v)) >> 1)))
-#else
-    #define LENGTH(v) (length(v))
-#endif
 
 vec4 hook() {
     vec3 cO = HOOKED_texOff(vec2(0.0, 0.0)).rgb;
